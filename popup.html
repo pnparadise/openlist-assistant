@@ -36,7 +36,6 @@
             <div class="action-buttons">
                 <button id="manual-page-btn" class="btn primary-btn">Manual Download</button>
                 <button id="settings-page-btn" class="btn secondary-btn">Settings</button>
-                <button id="refresh-btn" class="btn refresh-btn" style="display: none;">Refresh</button>
             </div>
 
             <!-- Downloads -->
@@ -81,6 +80,11 @@
                 <div class="setting-item">
                     <label for="api-endpoint">API Endpoint:</label>
                     <input type="text" id="api-endpoint" value="https://open.lan">
+                </div>
+                <div class="setting-item">
+                    <label for="auth-token">Token:</label>
+                    <input type="password" id="auth-token" placeholder="Please input your token">
+                    <small class="setting-description">Path: Settings - Other - Token</small>
                 </div>
                 <div class="setting-item">
                     <label for="download-path">Download Path:</label>

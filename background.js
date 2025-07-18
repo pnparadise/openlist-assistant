@@ -9,7 +9,8 @@ const openListData = {
         apiEndpoint: 'https://open.lan',
         defaultPath: '/',
         defaultTool: 'aria2',
-        deletePolicy: 'delete_on_upload_succeed'
+        deletePolicy: 'delete_on_upload_succeed',
+        token: ''
     }
 };
 
@@ -164,11 +165,9 @@ async function handleMagnetLink(magnetUrl, tab, sendResponse = null) {
         // Get auth token
         const token = await getAuthToken();
         if (!token) {
-            const settings = await getSettings();
-            const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
-            showNotification('Error', `Please login to ${apiEndpoint} first`);
+            showNotification('Error', `Please complete endpoint & token first`);
             if (sendResponse) {
-                sendResponse({ success: false, error: `Please login to ${apiEndpoint} first` });
+                sendResponse({ success: false, error: `Please complete endpoint & token first` });
             }
             return;
         }
@@ -215,64 +214,20 @@ async function handleMagnetLink(magnetUrl, tab, sendResponse = null) {
     }
 }
 
-// Get authentication token from localStorage
+// Get authentication token from settings
 async function getAuthToken(sendResponse = null) {
     try {
-        // Get settings to determine the correct domain
+        // Get settings to get the token
         const settings = await getSettings();
-        const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
-        const domain = new URL(apiEndpoint).hostname;
+        const token = settings.token || null;
         
-        // Query the active tab to get access to localStorage
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        
-        if (!tab || !tab.url || !tab.url.includes(domain)) {
-            // If not on the target domain, try to find any tab with that domain
-            const domainTabs = await chrome.tabs.query({ url: `https://${domain}/*` });
-            if (domainTabs.length === 0) {
-                const error = `Please open ${apiEndpoint} in a tab first`;
-                if (sendResponse) {
-                    sendResponse({ token: null, error });
-                }
-                return null;
-            }
-            // Use the first domain tab found
-            const targetTab = domainTabs[0];
-            
-            // Execute script to get token from localStorage
-            const results = await chrome.scripting.executeScript({
-                target: { tabId: targetTab.id },
-                func: () => {
-                    return localStorage.getItem('token');
-                }
-            });
-            
-            const token = results[0]?.result || null;
-            
-            if (sendResponse) {
-                sendResponse({ token });
-            }
-            
-            return token;
-        } else {
-            // Current tab is on the target domain, get token directly
-            const results = await chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                func: () => {
-                    return localStorage.getItem('token');
-                }
-            });
-            
-            const token = results[0]?.result || null;
-            
-            if (sendResponse) {
-                sendResponse({ token });
-            }
-            
-            return token;
+        if (sendResponse) {
+            sendResponse({ token });
         }
+        
+        return token;
     } catch (error) {
-        console.error('Error getting auth token from localStorage:', error);
+        console.error('Error getting auth token from settings:', error);
         if (sendResponse) {
             sendResponse({ token: null, error: error.message });
         }
@@ -280,30 +235,6 @@ async function getAuthToken(sendResponse = null) {
     }
 }
 
-// Clear invalid token from localStorage
-async function clearInvalidToken() {
-    try {
-        // Get settings to determine the correct domain
-        const settings = await getSettings();
-        const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
-        const domain = new URL(apiEndpoint).hostname;
-        
-        // Try to find any tab with the target domain to clear the token
-        const domainTabs = await chrome.tabs.query({ url: `https://${domain}/*` });
-        
-        if (domainTabs.length > 0) {
-            // Clear token from the first domain tab found
-            await chrome.scripting.executeScript({
-                target: { tabId: domainTabs[0].id },
-                func: () => {
-                    localStorage.removeItem('token');
-                }
-            });
-        }
-    } catch (error) {
-        // Silently handle errors
-    }
-}
 
 // Add offline download via OpenList API
 async function addOfflineDownload(urls, settings = null, sendResponse = null, token = null) {
@@ -321,9 +252,7 @@ async function addOfflineDownload(urls, settings = null, sendResponse = null, to
         }
         
         if (!token) {
-            const settings = await getSettings();
-            const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
-            const error = `No authentication token found. Please login to ${apiEndpoint}`;
+            const error = `No authentication token found. Please complete endpoint & token first`;
             if (sendResponse) sendResponse({ success: false, error });
             return { success: false, error };
         }
@@ -369,9 +298,9 @@ async function addOfflineDownload(urls, settings = null, sendResponse = null, to
             if (sendResponse) sendResponse(result);
             return result;
         } else {
-            // Handle 401 unauthorized - clear invalid token
-            if (data.code === 401 && data.message && data.message.includes('Password has been changed')) {
-                await clearInvalidToken();
+            // Handle 401 unauthorized - token is invalid
+            if (data.code === 401 ) {
+                // Token is invalid, user needs to update it in settings
             }
             
             const error = data.message || `HTTP ${response.status}: ${response.statusText}`;
@@ -490,10 +419,7 @@ async function cancelDownloadTask(taskId, token, sendResponse = null) {
             token = await getAuthToken();
         }
         
-        if (!token) {
-            const settings = await getSettings();
-            const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
-            const error = `No authentication token found. Please login to ${apiEndpoint}`;
+        if (!token) {            const error = `No authentication token found. Please complete endpoint & token first`;
             if (sendResponse) sendResponse({ success: false, error });
             return { success: false, error };
         }
@@ -523,9 +449,9 @@ async function cancelDownloadTask(taskId, token, sendResponse = null) {
             if (sendResponse) sendResponse(responseData);
             return responseData;
         } else {
-            // Handle 401 unauthorized - clear invalid token
-            if (result.code === 401 && result.message && result.message.includes('Password has been changed')) {
-                await clearInvalidToken();
+            // Handle 401 unauthorized - token is invalid
+            if (result.code === 401 ) {
+                // Token is invalid, user needs to update it in settings
             }
             
             const error = result.message || 'Failed to cancel task';
@@ -592,9 +518,9 @@ async function checkShouldStartPolling(sendResponse = null) {
                 });
             }
         } else {
-            // Handle 401 unauthorized - clear invalid token
-            if (result.code === 401 && result.message && result.message.includes('Password has been changed')) {
-                await clearInvalidToken();
+            // Handle 401 unauthorized - token is invalid
+            if (result.code === 401) {
+                // Token is invalid, user needs to update it in settings
             }
             
             if (sendResponse) {

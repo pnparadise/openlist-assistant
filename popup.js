@@ -2,10 +2,10 @@ document.addEventListener('DOMContentLoaded', function() {
     // DOM elements
     const connectionStatus = document.getElementById('connection-status');
     const tokenStatus = document.getElementById('token-status');
-    const refreshBtn = document.getElementById('refresh-btn');
     const manualUrl = document.getElementById('manual-url');
     const manualDownloadBtn = document.getElementById('manual-download-btn');
     const apiEndpoint = document.getElementById('api-endpoint');
+    const authToken = document.getElementById('auth-token');
     const downloadPath = document.getElementById('download-path');
     const downloadTool = document.getElementById('download-tool');
     const deletePolicy = document.getElementById('delete-policy');
@@ -48,7 +48,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function setupEventListeners() {
         // Existing event listeners
-        refreshBtn.addEventListener('click', handleRefresh);
         manualDownloadBtn.addEventListener('click', handleManualDownload);
         saveSettingsBtn.addEventListener('click', handleSaveSettings);
         refreshDownloadsBtn.addEventListener('click', loadDownloads);
@@ -108,6 +107,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (response && response.settings) {
                 const settings = response.settings;
                 apiEndpoint.value = settings.apiEndpoint || 'https://open.lan';
+                authToken.value = settings.token || '';
                 downloadPath.value = settings.defaultPath || '/';
                 downloadTool.value = settings.defaultTool || 'aria2';
                 deletePolicy.value = settings.deletePolicy || 'delete_on_upload_succeed';
@@ -140,35 +140,76 @@ document.addEventListener('DOMContentLoaded', function() {
                 tokenStatus.className = 'status-indicator disconnected';
                 connectionStatus.textContent = 'Reload';
                 connectionStatus.className = 'status-indicator disconnected';
-                refreshBtn.style.display = 'block';
                 return;
             }
 
-            // Check auth token
-            const tokenResponse = await chrome.runtime.sendMessage({ action: 'getAuthToken' });
-            
-            if (chrome.runtime.lastError) {
-                console.error('Runtime error:', chrome.runtime.lastError.message);
-                tokenStatus.textContent = 'Error';
-                tokenStatus.className = 'status-indicator disconnected';
-                connectionStatus.textContent = 'Error';
-                connectionStatus.className = 'status-indicator disconnected';
-                refreshBtn.style.display = 'block';
-                return;
-            }
-            
-            if (tokenResponse && tokenResponse.token) {
-                tokenStatus.textContent = 'Valid';
-                tokenStatus.className = 'status-indicator connected';
+            // Get settings to check API endpoint and token
+            const settingsResponse = await chrome.runtime.sendMessage({ action: 'getSettings' });
+            const settings = settingsResponse?.settings || {};
+            const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
+            const token = settings.token || '';
+
+            // Check connection status - use auth status logic (check if endpoint and token are configured)
+            if (apiEndpoint && token) {
                 connectionStatus.textContent = 'Connected';
                 connectionStatus.className = 'status-indicator connected';
-                refreshBtn.style.display = 'none';
+                
+                // Also update available download tools by checking the tools endpoint
+                try {
+                    const toolsResponse = await fetch(`${apiEndpoint}/api/public/offline_download_tools`, {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (toolsResponse.status === 200) {
+                        const result = await toolsResponse.json();
+                        if (result.code === 200 && result.data) {
+                            await updateDownloadTools(result.data);
+                        }
+                    }
+                } catch (toolsError) {
+                    console.error('Error fetching download tools:', toolsError);
+                    // Don't affect connection status, just log the error
+                }
+            } else {
+                connectionStatus.textContent = 'Disconnected';
+                connectionStatus.className = 'status-indicator disconnected';
+            }
+
+            // Check auth status by calling /api/me endpoint
+            if (token && apiEndpoint) {
+                try {
+                    const authResponse = await fetch(`${apiEndpoint}/api/me`, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': token,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (authResponse.status === 200) {
+                        const result = await authResponse.json();
+                        if (result.code === 200) {
+                            tokenStatus.textContent = 'Valid';
+                            tokenStatus.className = 'status-indicator connected';
+                        } else {
+                            tokenStatus.textContent = 'Invalid';
+                            tokenStatus.className = 'status-indicator disconnected';
+                        }
+                    } else {
+                        tokenStatus.textContent = 'Invalid';
+                        tokenStatus.className = 'status-indicator disconnected';
+                    }
+                } catch (authError) {
+                    console.error('Error checking auth status:', authError);
+                    tokenStatus.textContent = 'Error';
+                    tokenStatus.className = 'status-indicator disconnected';
+                }
             } else {
                 tokenStatus.textContent = 'Missing';
                 tokenStatus.className = 'status-indicator disconnected';
-                connectionStatus.textContent = 'Disabled';
-                connectionStatus.className = 'status-indicator disconnected';
-                refreshBtn.style.display = 'block';
             }
         } catch (error) {
             console.error('Error checking connection:', error);
@@ -177,41 +218,56 @@ document.addEventListener('DOMContentLoaded', function() {
                 tokenStatus.className = 'status-indicator disconnected';
                 connectionStatus.textContent = 'Error';
                 connectionStatus.className = 'status-indicator disconnected';
-                refreshBtn.style.display = 'block';
             }
         }
     }
 
-    async function handleRefresh() {
+    async function updateDownloadTools(availableTools) {
         try {
-            refreshBtn.disabled = true;
-            refreshBtn.textContent = 'Refreshing...';
+            // Get current selected tool
+            const currentTool = downloadTool.value;
             
-            // Refresh token
-            const tokenResponse = await chrome.runtime.sendMessage({ action: 'getAuthToken' });
+            // Clear existing options
+            downloadTool.innerHTML = '';
             
-            // Clear cache
-            await chrome.runtime.sendMessage({ action: 'clearProcessedMagnets' });
+            // Add available tools as options
+            const toolNames = {
+                'aria2': 'aria2',
+                'SimpleHttp': 'SimpleHttp',
+                'qBittorrent': 'qBittorrent'
+            };
             
-            if (tokenResponse && tokenResponse.token) {
-                showResult('Refreshed successfully', 'success');
-                await checkConnectionStatus();
-                
-                // Reload downloads and check if polling should start
-                await loadDownloads();
-            } else {
-                const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
-                const apiEndpoint = settings.settings?.apiEndpoint || 'https://open.lan';
-                showResult(`No token found. Please login to ${apiEndpoint}`, 'error');
+            availableTools.forEach(tool => {
+                if (toolNames[tool]) {
+                    const option = document.createElement('option');
+                    option.value = tool;
+                    option.textContent = toolNames[tool];
+                    downloadTool.appendChild(option);
+                }
+            });
+            
+            // Set default to aria2 if available, otherwise first available tool
+            if (availableTools.includes('aria2')) {
+                downloadTool.value = 'aria2';
+            } else if (availableTools.length > 0) {
+                downloadTool.value = availableTools[0];
+            }
+            
+            // If current tool is still available, keep it selected
+            if (availableTools.includes(currentTool)) {
+                downloadTool.value = currentTool;
             }
         } catch (error) {
-            console.error('Error refreshing:', error);
-            showResult('Error refreshing', 'error');
-        } finally {
-            refreshBtn.disabled = false;
-            refreshBtn.textContent = 'Refresh';
+            console.error('Error updating download tools:', error);
+            // Fallback to default options if there's an error
+            downloadTool.innerHTML = `
+                <option value="aria2">aria2</option>
+                <option value="SimpleHttp">SimpleHttp</option>
+                <option value="qBittorrent">qBittorrent</option>
+            `;
         }
     }
+
 
     async function handleManualDownload() {
         try {
@@ -232,6 +288,7 @@ document.addEventListener('DOMContentLoaded', function() {
             
             const settings = {
                 apiEndpoint: apiEndpoint.value,
+                token: authToken.value,
                 defaultPath: downloadPath.value,
                 defaultTool: downloadTool.value,
                 deletePolicy: deletePolicy.value
@@ -250,7 +307,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 startOngoingDownloadsPolling();
                 await loadDownloads();
                 // Auto-navigate back to main page after successful download
-                setTimeout(() => showPage('main'), 1500);
+                showPage('main');
             } else {
                 showResult(`Failed to add download: ${response.error || 'Unknown error'}`, 'error');
             }
@@ -270,6 +327,7 @@ document.addEventListener('DOMContentLoaded', function() {
             
             const settings = {
                 apiEndpoint: apiEndpoint.value,
+                token: authToken.value,
                 defaultPath: downloadPath.value,
                 defaultTool: downloadTool.value,
                 deletePolicy: deletePolicy.value
@@ -282,8 +340,12 @@ document.addEventListener('DOMContentLoaded', function() {
             
             if (response && response.success) {
                 showResult('Settings saved successfully', 'success');
+                // Refresh connection status and auth status after saving settings
+                await checkConnectionStatus();
+                // Refresh downloads list to update any error messages
+                await loadDownloads();
                 // Auto-navigate back to main page after successful save
-                setTimeout(() => showPage('main'), 1500);
+                showPage('main');
             } else {
                 showResult(`Failed to save settings: ${response.error || 'Unknown error'}`, 'error');
             }
@@ -307,8 +369,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const tokenResponse = await chrome.runtime.sendMessage({ action: 'getAuthToken' });
             if (!tokenResponse || !tokenResponse.token) {
                 const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
-                const apiEndpoint = settings.settings?.apiEndpoint || 'https://open.lan';
-                downloadsList.innerHTML = `<div class="no-downloads">Please login to ${apiEndpoint}</div>`;
+                downloadsList.innerHTML = `<div class="no-downloads">Please complete endpoint & token first</div>`;
                 stopOngoingDownloadsPolling();
                 return;
             }
@@ -360,8 +421,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Handle 401 unauthorized - token is invalid
                 if (result.code === 401 && result.message && result.message.includes('Password has been changed')) {
                     console.log('401 error detected in loadDownloads, token is invalid');
-                    const domain = new URL(apiEndpoint).hostname;
-                    downloadsList.innerHTML = `<div class="no-downloads">Please login to ${domain} again</div>`;
+                    downloadsList.innerHTML = `<div class="no-downloads">Please complete endpoint & token first</div>`;
                     // Update only token status - connection is still working since we got a response
                     tokenStatus.textContent = 'Invalid';
                     tokenStatus.className = 'status-indicator disconnected';
@@ -575,8 +635,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!tokenResponse || !tokenResponse.token) {
                 const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
                 const apiEndpoint = settings.settings?.apiEndpoint || 'https://open.lan';
-                const domain = new URL(apiEndpoint).hostname;
-                showResult(`Please login to ${domain} first`, 'error');
+                showResult(`Please complete endpoint & token first`, 'error');
                 return;
             }
 

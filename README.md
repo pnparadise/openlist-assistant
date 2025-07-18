@@ -6,10 +6,12 @@ A Chrome extension that intercepts magnet links from the address bar and adds th
 
 - **Address Bar Magnet Link Interception**: Intercepts magnet links entered in the browser address bar
 - **One-Click Downloads**: Automatically adds magnet links to OpenList offline downloads
-- **localStorage-Based Authentication**: Extracts authentication tokens from your private openlist website localStorage
+- **Settings-Based Authentication**: Configure API endpoint and authentication token directly in extension settings
 - **Configurable Settings**: Customize download path, tool, and deletion policies
-- **Download Management**: View recent downloads and their status
+- **Download Management**: View recent downloads and their status with real-time updates
 - **Manual Downloads**: Add magnet URLs manually through the popup interface
+- **Dynamic Tool Detection**: Automatically detects available download tools from your OpenList server
+- **Real-time Status Updates**: Connection and authentication status update automatically
 - **Non-Intrusive**: Does not inject scripts into web pages, avoiding interference with normal browsing
 
 ## Installation
@@ -21,13 +23,14 @@ A Chrome extension that intercepts magnet links from the address bar and adds th
 
 ## Setup
 
-1. **Login to OpenList**: Visit your [openlist]([GitHub - OpenListTeam/OpenList: A new AList Fork to Anti Trust Crisis](https://github.com/OpenListTeam/OpenList)) domain and login to your account
-2. **Install Extension**: Load the extension in Chrome
-3. **Configure Settings**: Open the extension popup and configure your preferred settings:
-   - API Endpoint: `https://open.lan` (default)  you openlist domain
-   - Download Path: `/` (default)
-   - Download Tool: `aria2` (default)
-   - Delete Policy: `delete_on_upload_succeed` (default)
+1. **Install Extension**: Load the extension in Chrome
+2. **Configure Settings**: Open the extension popup and configure your settings:
+   - **API Endpoint**: Your OpenList domain (e.g., `https://open.lan`)
+   - **Token**: Your authentication token (Path: Settings - Other - Token in OpenList)
+   - **Download Path**: `/` (default)
+   - **Download Tool**: Automatically detected from server (aria2, SimpleHttp, qBittorrent)
+   - **Delete Policy**: `delete_on_upload_succeed` (default)
+3. **Save Settings**: Click "Save Settings" to apply configuration
 
 ## Usage
 
@@ -41,30 +44,50 @@ A Chrome extension that intercepts magnet links from the address bar and adds th
 ### Manual Downloads
 
 1. Open the extension popup
-2. Paste a magnet URL in the "Manual Download" section
-3. Click "Add to Downloads"
+2. Navigate to the "Manual Download" page
+3. Paste a magnet URL in the input field
+4. Click "Add to Downloads"
 
 ### Settings Management
 
-- Open the extension popup
-- Navigate to the "Settings" section
-- Modify any settings as needed
-- Click "Save Settings"
+1. Open the extension popup
+2. Navigate to the "Settings" page
+3. Configure your API endpoint and token
+4. Modify other settings as needed
+5. Click "Save Settings" (status will update automatically)
 
 ## API Integration
 
-The extension uses the OpenList API with the following configuration:
+The extension uses the OpenList API with the following endpoints:
 
-### Endpoint
+### Authentication Check
+```
+GET /api/me
+```
+Used to validate authentication token and check user status.
 
+### Connection Check & Tool Detection
+```
+GET /api/public/offline_download_tools
+```
+Used to check server connectivity and detect available download tools.
+
+### Add Download
 ```
 POST /api/fs/add_offline_download
 ```
 
+### Download Status
+```
+GET /api/task/offline_download/undone
+```
+Used to fetch ongoing downloads and their status.
+
 ### Authentication
 
-- Uses localStorage from your openlist domain
-- Looks for token with key: `token`
+- Uses token-based authentication configured in extension settings
+- Token should be obtained from OpenList: Settings → Other → Token
+- Token is stored securely in extension settings
 
 ### Request Format
 
@@ -79,7 +102,8 @@ POST /api/fs/add_offline_download
 
 ### Supported Tools
 
-- `aria2` (default)
+Tools are automatically detected from your OpenList server:
+- `aria2` (most common)
 - `SimpleHttp`
 - `qBittorrent`
 
@@ -109,61 +133,77 @@ POST /api/fs/add_offline_download
 #### Background Script (`background.js`)
 
 - Intercepts magnet links from address bar navigation
-- Manages authentication tokens from localStorage
+- Manages settings-based authentication
 - Makes API calls to OpenList
 - Stores download history and settings
 - Uses webNavigation API to catch magnet link navigation
 
 #### Popup Interface (`popup.html`, `popup.js`, `popup.css`)
 
-- Shows connection and authentication status
+- Shows real-time connection and authentication status
 - Provides manual download functionality
-- Allows configuration of settings
-- Displays recent downloads
+- Allows configuration of settings with immediate feedback
+- Displays recent downloads with real-time updates
+- Multi-page interface (Main, Manual Download, Settings)
 
 ### Permissions
 
 The extension requires the following permissions:
 
-- `activeTab`: Access to the current tab
+- `activeTab`: Access to the current tab for magnet link detection
 - `storage`: Store settings and download history
-- `scripting`: Execute scripts for confirmation dialogs and localStorage access
+- `scripting`: Execute scripts for magnet link counting
 - `notifications`: Show download notifications
 - `webNavigation`: Intercept navigation events for magnet links
-- `tabs`: Access tab information for magnet link handling
+- `host_permissions: <all_urls>`: Make API calls to user-configured endpoints
+
+## Status Indicators
+
+### Connection Status
+- **Connected**: API endpoint and token are configured
+- **Disconnected**: Missing endpoint or token configuration
+- **Error**: Extension or network issues
+
+### Auth Status
+- **Valid**: Token successfully authenticated with `/api/me`
+- **Invalid**: Token authentication failed
+- **Missing**: No token configured
+- **Error**: Network or API errors
 
 ## Troubleshooting
 
-### No Auth Token Found
+### Configuration Issues
 
-- Make sure you're logged in to your openlist website
-- Check that the token is stored in localStorage with key "token"
-- Try refreshing the token using the "Refresh Token" button
+- **"Please complete endpoint & token first"**: Configure both API endpoint and token in Settings
+- **Connection Status "Disconnected"**: Check that both endpoint and token are filled in Settings
+- **Auth Status "Invalid"**: Verify your token is correct (get from OpenList: Settings → Other → Token)
 
-### Connection Failed
+### Connection Problems
 
-- Verify the API endpoint is correct (openlist site)
+- Verify the API endpoint URL is correct (your OpenList domain)
 - Check your internet connection
 - Ensure OpenList service is accessible
+- Try saving settings again to refresh connection status
 
 ### Magnet Links Not Detected
 
 - Make sure you're pasting the magnet link directly into the address bar
-- Check that the magnet link format is valid (starts with magnet:?xt=urn:btih:)
+- Check that the magnet link format is valid (starts with `magnet:?xt=urn:btih:`)
 - Try reloading the extension if navigation interception isn't working
 
 ### Downloads Not Appearing
 
 - Check the OpenList web interface for download status
 - Verify your download path and tool settings
-- Review the Recent Downloads section in the popup
+- Review the downloads list in the extension popup
+- Ensure your token has proper permissions
 
 ## Security
 
-- The extension only accesses localStorage from the openlist domain
-- Authentication tokens are retrieved from localStorage and not stored permanently by the extension
-- All API communications use HTTPS
+- Authentication tokens are stored securely in extension settings
+- All API communications use HTTPS when configured
 - No sensitive data is transmitted to third parties
+- Extension follows principle of least privilege with minimal permissions
 
 ## Support
 
@@ -172,8 +212,19 @@ For issues related to:
 - **Extension functionality**: Check the browser console for errors
 - **OpenList API**: Refer to the OpenList documentation
 - **Download problems**: Check your OpenList account and settings
+- **Token issues**: Verify token from OpenList Settings → Other → Token
 
 ## Version History
+
+### v1.1.0
+
+- **Settings-based authentication**: Removed localStorage dependency, token now configured in extension settings
+- **Real-time status updates**: Connection and auth status update automatically after saving settings
+- **Dynamic tool detection**: Download tools automatically detected from server capabilities
+- **Improved API integration**: Uses `/api/me` for authentication validation and `/api/public/offline_download_tools` for connection checking
+- **Enhanced user experience**: Immediate navigation, better error messages, automatic status refresh
+- **Optimized permissions**: Removed unnecessary `tabs` permission, using `activeTab` only
+- **Streamlined interface**: Removed refresh functionality, automatic updates instead
 
 ### v1.0.0
 
