@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenList Download Assistant</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Main Page -->
+        <div id="main-page" class="page active">
+            <div class="header">
+                <h1>OpenList Assistant</h1>
+                <div class="header-info">
+                    <span id="current-url" class="url-info">-</span>
+                    <span id="magnet-count" class="magnet-count">0 magnets</span>
+                </div>
+            </div>
+
+            <!-- Status Section -->
+            <div class="status-section">
+                <div class="status-row">
+                    <div class="status-group">
+                        <span class="status-label">Connection:</span>
+                        <span id="connection-status" class="status-indicator">Checking...</span>
+                    </div>
+                    <div class="status-group">
+                        <span class="status-label">Authorization:</span>
+                        <span id="token-status" class="status-indicator">Checking...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="action-buttons">
+                <button id="manual-page-btn" class="btn primary-btn">Manual Download</button>
+                <button id="settings-page-btn" class="btn secondary-btn">Settings</button>
+                <button id="refresh-btn" class="btn refresh-btn" style="display: none;">Refresh</button>
+            </div>
+
+            <!-- Downloads -->
+            <div class="downloads-section">
+                <div class="section-header">
+                    <h3>Downloads</h3>
+                    <button id="refresh-downloads-btn" class="btn mini-btn">↻</button>
+                </div>
+                <div id="downloads-list" class="downloads-list">
+                    <div class="no-downloads">No downloads</div>
+                </div>
+            </div>
+
+            <!-- Result Display -->
+            <div id="result-display" class="result-display"></div>
+        </div>
+
+        <!-- Manual Download Page -->
+        <div id="manual-page" class="page">
+            <div class="page-header">
+                <button id="back-from-manual" class="btn back-btn">← Back</button>
+                <h2>Manual Download</h2>
+            </div>
+            
+            <div class="manual-section">
+                <div class="input-group">
+                    <label for="manual-url">Magnet URL:</label>
+                    <textarea id="manual-url" placeholder="magnet:?xt=urn:btih:..." rows="4"></textarea>
+                </div>
+                <button id="manual-download-btn" class="btn primary-btn full-width">Add to Downloads</button>
+            </div>
+        </div>
+
+        <!-- Settings Page -->
+        <div id="settings-page" class="page">
+            <div class="page-header">
+                <button id="back-from-settings" class="btn back-btn">← Back</button>
+                <h2>Settings</h2>
+            </div>
+            
+            <div class="settings-section">
+                <div class="setting-item">
+                    <label for="api-endpoint">API Endpoint:</label>
+                    <input type="text" id="api-endpoint" value="https://open.lan">
+                </div>
+                <div class="setting-item">
+                    <label for="download-path">Download Path:</label>
+                    <input type="text" id="download-path" value="/">
+                </div>
+                <div class="setting-item">
+                    <label for="download-tool">Download Tool:</label>
+                    <select id="download-tool">
+                        <option value="aria2">aria2</option>
+                        <option value="SimpleHttp">SimpleHttp</option>
+                        <option value="qBittorrent">qBittorrent</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label for="delete-policy">Delete Policy:</label>
+                    <select id="delete-policy">
+                        <option value="delete_on_upload_succeed">Delete on Upload Success</option>
+                        <option value="delete_on_upload_failed">Delete on Upload Failed</option>
+                        <option value="delete_never">Never Delete</option>
+                        <option value="delete_always">Always Delete</option>
+                    </select>
+                </div>
+                <button id="save-settings-btn" class="btn primary-btn full-width">Save Settings</button>
+            </div>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>
