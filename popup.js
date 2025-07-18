@@ -633,8 +633,6 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             const tokenResponse = await chrome.runtime.sendMessage({ action: 'getAuthToken' });
             if (!tokenResponse || !tokenResponse.token) {
-                const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
-                const apiEndpoint = settings.settings?.apiEndpoint || 'https://open.lan';
                 showResult(`Please complete endpoint & token first`, 'error');
                 return;
             }
