@@ -27,7 +27,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Polling variables
     let ongoingDownloadsInterval = null;
-    let lastOngoingDownloadsCount = 0;
     let shouldPoll = false;
     
     // Speed calculation tracking
@@ -40,9 +39,8 @@ document.addEventListener('DOMContentLoaded', function() {
         await loadSettings();
         await updateCurrentUrl();
         await checkConnectionStatus();
-        await loadDownloads();
+        await loadDownloads(); // loadDownloads will handle polling logic automatically
         await countMagnetLinks();
-        await checkShouldStartPolling();
         setupEventListeners();
     }
 
@@ -149,58 +147,69 @@ document.addEventListener('DOMContentLoaded', function() {
             const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
             const token = settings.token || '';
 
-            // Check connection status - use auth status logic (check if endpoint and token are configured)
-            if (apiEndpoint && token) {
-                connectionStatus.textContent = 'Connected';
-                connectionStatus.className = 'status-indicator connected';
+            // Check connection status using cached method
+            try {
+                const connectionResponse = await chrome.runtime.sendMessage({
+                    action: 'checkConnectionStatus',
+                    apiEndpoint: apiEndpoint,
+                    token: token
+                });
                 
-                // Also update available download tools by checking the tools endpoint
-                try {
-                    const toolsResponse = await fetch(`${apiEndpoint}/api/public/offline_download_tools`, {
-                        method: 'GET',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        }
-                    });
+                if (connectionResponse && connectionResponse.isConnected) {
+                    connectionStatus.textContent = 'Connected';
+                    connectionStatus.className = 'status-indicator connected';
                     
-                    if (toolsResponse.status === 200) {
-                        const result = await toolsResponse.json();
-                        if (result.code === 200 && result.data) {
-                            await updateDownloadTools(result.data);
-                        }
+                    // Update available download tools if we have them
+                    if (connectionResponse.availableTools) {
+                        await updateDownloadTools(connectionResponse.availableTools);
                     }
-                } catch (toolsError) {
-                    console.error('Error fetching download tools:', toolsError);
-                    // Don't affect connection status, just log the error
+                    
+                    // Show cache info in console for debugging
+                    if (connectionResponse.cached) {
+                        console.log('Connection status from cache');
+                    } else {
+                        console.log('Connection status from fresh API call');
+                    }
+                } else {
+                    connectionStatus.textContent = 'Disconnected';
+                    connectionStatus.className = 'status-indicator disconnected';
+                    
+                    if (connectionResponse && connectionResponse.reason === 'missing_credentials') {
+                        // Keep as disconnected but don't show error
+                    }
                 }
-            } else {
-                connectionStatus.textContent = 'Disconnected';
+            } catch (connectionError) {
+                console.error('Error checking connection status:', connectionError);
+                connectionStatus.textContent = 'Error';
                 connectionStatus.className = 'status-indicator disconnected';
             }
 
-            // Check auth status by calling /api/me endpoint
+            // Check auth status using cached method
             if (token && apiEndpoint) {
                 try {
-                    const authResponse = await fetch(`${apiEndpoint}/api/me`, {
-                        method: 'GET',
-                        headers: {
-                            'Authorization': token,
-                            'Content-Type': 'application/json'
-                        }
+                    const authResponse = await chrome.runtime.sendMessage({
+                        action: 'checkAuthStatus',
+                        apiEndpoint: apiEndpoint,
+                        token: token
                     });
                     
-                    if (authResponse.status === 200) {
-                        const result = await authResponse.json();
-                        if (result.code === 200) {
-                            tokenStatus.textContent = 'Valid';
-                            tokenStatus.className = 'status-indicator connected';
+                    if (authResponse && authResponse.isValid) {
+                        tokenStatus.textContent = 'Valid';
+                        tokenStatus.className = 'status-indicator connected';
+                        
+                        // Show cache info in console for debugging
+                        if (authResponse.cached) {
+                            console.log('Auth status from cache');
                         } else {
-                            tokenStatus.textContent = 'Invalid';
-                            tokenStatus.className = 'status-indicator disconnected';
+                            console.log('Auth status from fresh API call');
                         }
                     } else {
                         tokenStatus.textContent = 'Invalid';
                         tokenStatus.className = 'status-indicator disconnected';
+                        
+                        if (authResponse && authResponse.reason === 'missing_credentials') {
+                            tokenStatus.textContent = 'Missing';
+                        }
                     }
                 } catch (authError) {
                     console.error('Error checking auth status:', authError);
@@ -304,8 +313,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 showResult('Download added successfully', 'success');
                 manualUrl.value = '';
                 shouldPoll = true;
-                startOngoingDownloadsPolling();
-                await loadDownloads();
+                await loadDownloads(); // loadDownloads will handle polling automatically
                 // Auto-navigate back to main page after successful download
                 showPage('main');
             } else {
@@ -362,83 +370,52 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             if (!chrome.runtime?.id) {
                 downloadsList.innerHTML = '<div class="no-downloads">Extension context invalid</div>';
-                stopOngoingDownloadsPolling();
+                stopPolling();
                 return;
             }
 
-            const tokenResponse = await chrome.runtime.sendMessage({ action: 'getAuthToken' });
-            if (!tokenResponse || !tokenResponse.token) {
-                const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
-                downloadsList.innerHTML = `<div class="no-downloads">Please complete endpoint & token first</div>`;
-                stopOngoingDownloadsPolling();
-                return;
-            }
-
-            // Load ongoing downloads directly from API
-            const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
-            const apiEndpoint = settings.settings?.apiEndpoint || 'https://open.lan';
+            // Load downloads using background script
+            const response = await chrome.runtime.sendMessage({ action: 'getDownloadsList' });
             
-            const response = await fetch(`${apiEndpoint}/api/task/offline_download/undone`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': tokenResponse.token,
-                    'Content-Type': 'application/json'
-                }
-            });
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            
-            const result = await response.json();
-            
-            if (result.code === 200) {
-                const downloads = result.data || [];
-                
-                // Sort downloads by creation time (newest first)
-                downloads.sort((a, b) => {
-                    const timeA = a.start_time ? new Date(a.start_time).getTime() : 0;
-                    const timeB = b.start_time ? new Date(b.start_time).getTime() : 0;
-                    return timeB - timeA; // Descending order (newest first)
-                });
+            if (response && response.success) {
+                const downloads = response.downloads || [];
                 
                 displayDownloads(downloads);
                 lastOngoingDownloadsCount = downloads.length;
                 
-                // Auto-start polling if there are downloads and polling is not already active
+                // Simple polling logic: has downloads = start polling, no downloads = stop polling
                 const hasDownloads = downloads.length > 0;
                 
-                if (hasDownloads && !shouldPoll && !ongoingDownloadsInterval) {
-                    console.log('Found downloads, starting polling automatically');
-                    shouldPoll = true;
-                    startOngoingDownloadsPolling();
+                if (hasDownloads && !shouldPoll) {
+                    console.log('Starting polling - downloads found:', hasDownloads);
+                    startPolling();
                 } else if (!hasDownloads && shouldPoll) {
-                    // No downloads found, stop polling and reset variables
                     console.log('No downloads found, stopping polling');
-                    stopOngoingDownloadsPolling();
+                    stopPolling();
                 }
             } else {
-                // Handle 401 unauthorized - token is invalid
-                if (result.code === 401 && result.message && result.message.includes('Password has been changed')) {
+                // Handle errors from background script
+                if (response && response.code === 401) {
                     console.log('401 error detected in loadDownloads, token is invalid');
                     downloadsList.innerHTML = `<div class="no-downloads">Please complete endpoint & token first</div>`;
+                    
                     // Update only token status - connection is still working since we got a response
                     tokenStatus.textContent = 'Invalid';
                     tokenStatus.className = 'status-indicator disconnected';
                     connectionStatus.textContent = 'Connected';
                     connectionStatus.className = 'status-indicator connected';
-                    refreshBtn.style.display = 'block';
                 } else {
-                    downloadsList.innerHTML = '<div class="no-downloads">Error loading downloads</div>';
+                    const errorMsg = response?.error || 'Error loading downloads';
+                    downloadsList.innerHTML = `<div class="no-downloads">${errorMsg}</div>`;
                 }
                 shouldPoll = false;
                 lastOngoingDownloadsCount = 0;
-                stopOngoingDownloadsPolling();
+                stopPolling();
             }
         } catch (error) {
             console.error('Error loading downloads:', error);
             downloadsList.innerHTML = '<div class="no-downloads">Error loading downloads</div>';
-            stopOngoingDownloadsPolling();
+            stopPolling();
         }
     }
 
@@ -669,79 +646,55 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // Start polling for ongoing downloads
-    function startOngoingDownloadsPolling() {
-        // Don't start if we shouldn't poll
-        if (!shouldPoll) {
+
+    // Start polling with robust background loop
+    function startPolling() {
+        if (ongoingDownloadsInterval) {
+            console.log('Polling already active, skipping start');
             return;
         }
-
-        // Clear any existing interval
-        if (ongoingDownloadsInterval) {
-            clearInterval(ongoingDownloadsInterval);
-        }
-
-        // Poll every 3 seconds
+        
+        shouldPoll = true;
         ongoingDownloadsInterval = setInterval(async () => {
-            await loadDownloads();
+            if (!shouldPoll) {
+                stopPolling();
+                return;
+            }
             
-            // Stop polling if no ongoing downloads
-            if (lastOngoingDownloadsCount === 0) {
-                console.log('No ongoing downloads, stopping polling');
-                shouldPoll = false;
-                clearInterval(ongoingDownloadsInterval);
-                ongoingDownloadsInterval = null;
+            try {
+                console.log('Polling downloads...');
+                await loadDownloads();
+            } catch (error) {
+                console.error('Error during polling:', error);
+                // Continue polling even if one request fails
             }
         }, 3000);
+        
+        console.log('Started polling with interval:', ongoingDownloadsInterval);
     }
 
     // Stop polling
-    function stopOngoingDownloadsPolling() {
+    function stopPolling() {
         shouldPoll = false;
         if (ongoingDownloadsInterval) {
             clearInterval(ongoingDownloadsInterval);
             ongoingDownloadsInterval = null;
+            console.log('Stopped polling');
         }
         lastOngoingDownloadsCount = 0;
     }
 
-    // Check if polling should start (for when popup opens after download was triggered)
-    async function checkShouldStartPolling() {
-        try {
-            if (!chrome.runtime?.id) {
-                console.log('Extension context invalid, skipping polling check');
-                return;
-            }
-
-            console.log('Checking if polling should start...');
-            
-            // Use the unified function that checks flag first, then API if needed
-            const response = await chrome.runtime.sendMessage({ action: 'checkShouldStartPolling' });
-            console.log('checkShouldStartPolling response:', response);
-            
-            if (response && response.shouldStartPolling) {
-                console.log('Should start polling, starting now');
-                shouldPoll = true;
-                startOngoingDownloadsPolling();
-            } else {
-                console.log('No need to start polling');
-            }
-        } catch (error) {
-            console.error('Error checking should start polling:', error);
-        }
-    }
 
     // Listen for messages from background script
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.action === 'startPolling') {
             shouldPoll = true;
-            startOngoingDownloadsPolling();
-            loadDownloads(); // Refresh immediately
+            loadDownloads(); // loadDownloads will handle polling automatically
         }
     });
 
     // Stop polling when popup closes
     window.addEventListener('beforeunload', () => {
-        stopOngoingDownloadsPolling();
+        stopPolling();
     });
 });

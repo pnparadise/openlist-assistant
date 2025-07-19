@@ -11,8 +11,92 @@ const openListData = {
         defaultTool: 'aria2',
         deletePolicy: 'delete_on_upload_succeed',
         token: ''
+    },
+    statusCache: {
+        auth: {
+            isValid: null,
+            needsRefresh: true // Only refresh when explicitly needed
+        },
+        connection: {
+            isConnected: null,
+            availableTools: null,
+            needsRefresh: true // Only refresh when explicitly needed
+        }
     }
 };
+
+// Common API call function to reduce code duplication
+async function makeApiCall(url, options = {}) {
+    try {
+        const response = await fetch(url, options);
+        
+        // Handle HTTP status errors
+        if (!response.ok) {
+            // Mark status caches for refresh on HTTP errors
+            openListData.statusCache.auth.needsRefresh = true;
+            openListData.statusCache.connection.needsRefresh = true;
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const result = await response.json();
+        
+        // Handle 401 unauthorized - token is invalid
+        if (result.code === 401) {
+            // Set auth status as invalid immediately
+            openListData.statusCache.auth.isValid = false;
+            openListData.statusCache.auth.needsRefresh = false; // Already updated
+        }
+        
+        return {
+            success: response.ok && result.code === 200,
+            httpStatus: response.status,
+            data: result,
+            error: result.message || null
+        };
+    } catch (error) {
+        // Network errors also mark caches for refresh
+        openListData.statusCache.auth.needsRefresh = true;
+        openListData.statusCache.connection.needsRefresh = true;
+        throw error;
+    }
+}
+
+// Specialized API call function for status checking with cache management
+async function makeStatusApiCall(url, options = {}, cache = null) {
+    try {
+        const response = await fetch(url, options);
+        
+        if (response.ok) {
+            const result = await response.json();
+            return {
+                success: response.status === 200 && result.code === 200,
+                httpStatus: response.status,
+                data: result,
+                error: result.message || null
+            };
+        } else {
+            // Handle HTTP status errors for status checks
+            if (cache && response.status >= 500) {
+                cache.needsRefresh = true;
+            } else if (cache && response.status < 500) {
+                cache.needsRefresh = false;
+            }
+            
+            return {
+                success: false,
+                httpStatus: response.status,
+                data: null,
+                error: `HTTP ${response.status}: ${response.statusText}`
+            };
+        }
+    } catch (error) {
+        // Network errors mark cache for refresh
+        if (cache) {
+            cache.needsRefresh = true;
+        }
+        throw error;
+    }
+}
 
 // Handle extension installation
 chrome.runtime.onInstalled.addListener(() => {
@@ -141,8 +225,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             openListData.processedMagnets.clear();
             sendResponse({ success: true, message: 'Processed magnets cache cleared' });
             break;
-        case 'checkShouldStartPolling':
-            checkShouldStartPolling(sendResponse);
+        case 'checkAuthStatus':
+            checkAuthStatus(message.apiEndpoint, message.token, sendResponse);
+            return true; // Keep channel open for async response
+        case 'checkConnectionStatus':
+            checkConnectionStatus(message.apiEndpoint, message.token, sendResponse);
+            return true; // Keep channel open for async response
+        case 'invalidateStatusCache':
+            openListData.statusCache.auth.needsRefresh = true;
+            openListData.statusCache.connection.needsRefresh = true;
+            sendResponse({ success: true });
+            break;
+        case 'setAuthStatusInvalid':
+            openListData.statusCache.auth.isValid = false;
+            openListData.statusCache.auth.needsRefresh = false; // Already updated
+            sendResponse({ success: true });
+            break;
+        case 'getDownloadsList':
+            getDownloadsList(sendResponse);
             return true; // Keep channel open for async response
         default:
             break;
@@ -269,7 +369,7 @@ async function addOfflineDownload(urls, settings = null, sendResponse = null, to
         };
 
 
-        const response = await fetch(`${settings.apiEndpoint}/api/fs/add_offline_download`, {
+        const apiResult = await makeApiCall(`${settings.apiEndpoint}/api/fs/add_offline_download`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -277,10 +377,8 @@ async function addOfflineDownload(urls, settings = null, sendResponse = null, to
             },
             body: JSON.stringify(requestBody)
         });
-
-        const data = await response.json();
         
-        if (response.ok && data.code === 200) {
+        if (apiResult.success) {
             // Mark URLs as processed
             urls.forEach(url => openListData.processedMagnets.add(url));
             
@@ -291,19 +389,14 @@ async function addOfflineDownload(urls, settings = null, sendResponse = null, to
                 urls: urls,
                 timestamp: new Date().toISOString(),
                 status: 'added',
-                tasks: data.data.tasks || []
+                tasks: apiResult.data.data.tasks || []
             });
 
-            const result = { success: true, data: data.data };
+            const result = { success: true, data: apiResult.data.data };
             if (sendResponse) sendResponse(result);
             return result;
         } else {
-            // Handle 401 unauthorized - token is invalid
-            if (data.code === 401 ) {
-                // Token is invalid, user needs to update it in settings
-            }
-            
-            const error = data.message || `HTTP ${response.status}: ${response.statusText}`;
+            const error = apiResult.error || `HTTP ${apiResult.httpStatus}: Request failed`;
             const result = { success: false, error };
             if (sendResponse) sendResponse(result);
             return result;
@@ -338,27 +431,6 @@ async function getSettings(sendResponse = null) {
     }
 }
 
-// Update settings in storage
-async function updateSettings(newSettings, sendResponse = null) {
-    try {
-        const updatedSettings = { ...openListData.settings, ...newSettings };
-        await chrome.storage.local.set({ openListSettings: updatedSettings });
-        openListData.settings = updatedSettings;
-        
-        const result = { success: true, settings: updatedSettings };
-        if (sendResponse) {
-            sendResponse(result);
-        }
-        return result;
-    } catch (error) {
-        console.error('Error updating settings:', error);
-        const result = { success: false, error: error.message };
-        if (sendResponse) {
-            sendResponse(result);
-        }
-        return result;
-    }
-}
 
 // Update extension icon
 function updateIcon(active, tabId) {
@@ -390,6 +462,197 @@ function showNotification(title, message) {
     }).catch(error => {
         console.log('Notification not available:', error);
     });
+}
+
+// Check auth status with persistent caching
+async function checkAuthStatus(apiEndpoint, token, sendResponse = null) {
+    try {
+        const cache = openListData.statusCache.auth;
+        
+        // Return cached result if available and no refresh needed
+        if (!cache.needsRefresh && cache.isValid !== null) {
+            if (sendResponse) {
+                sendResponse({
+                    isValid: cache.isValid,
+                    cached: true
+                });
+            }
+            return cache.isValid;
+        }
+        
+        // Need to refresh or no cached result, make API call
+        if (!token || !apiEndpoint) {
+            cache.isValid = false;
+            cache.needsRefresh = false; // Mark as refreshed
+            if (sendResponse) {
+                sendResponse({ isValid: false, cached: false, reason: 'missing_credentials' });
+            }
+            return false;
+        }
+        
+        try {
+            const apiResult = await makeStatusApiCall(`${apiEndpoint}/api/me`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': token,
+                    'Content-Type': 'application/json'
+                }
+            }, cache);
+            
+            cache.isValid = apiResult.success;
+            
+            // Only mark as not needing refresh if call was successful
+            if (apiResult.httpStatus < 500) {
+                cache.needsRefresh = false;
+            }
+            
+            if (sendResponse) {
+                sendResponse({
+                    isValid: cache.isValid,
+                    cached: false,
+                    httpStatus: apiResult.httpStatus
+                });
+            }
+            
+            return cache.isValid;
+        } catch (error) {
+            console.error('Error checking auth status:', error);
+            // On network error, keep current status but mark for refresh
+            cache.needsRefresh = true;
+            
+            if (sendResponse) {
+                sendResponse({
+                    isValid: cache.isValid || false,
+                    cached: false,
+                    error: error.message
+                });
+            }
+            
+            return cache.isValid || false;
+        }
+    } catch (error) {
+        console.error('Error in checkAuthStatus:', error);
+        if (sendResponse) {
+            sendResponse({ isValid: false, cached: false, error: error.message });
+        }
+        return false;
+    }
+}
+
+// Check connection status with persistent caching
+async function checkConnectionStatus(apiEndpoint, token, sendResponse = null) {
+    try {
+        const cache = openListData.statusCache.connection;
+        
+        // Return cached result if available and no refresh needed
+        if (!cache.needsRefresh && cache.isConnected !== null) {
+            if (sendResponse) {
+                sendResponse({
+                    isConnected: cache.isConnected,
+                    availableTools: cache.availableTools,
+                    cached: true
+                });
+            }
+            return { isConnected: cache.isConnected, availableTools: cache.availableTools };
+        }
+        
+        // Need to refresh or no cached result, make API call
+        if (!apiEndpoint || !token) {
+            cache.isConnected = false;
+            cache.availableTools = null;
+            cache.needsRefresh = false; // Mark as refreshed
+            if (sendResponse) {
+                sendResponse({ isConnected: false, availableTools: null, cached: false, reason: 'missing_credentials' });
+            }
+            return { isConnected: false, availableTools: null };
+        }
+        
+        try {
+            const apiResult = await makeStatusApiCall(`${apiEndpoint}/api/public/offline_download_tools`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }, cache);
+            
+            cache.isConnected = apiResult.success;
+            if (cache.isConnected && apiResult.data && apiResult.data.data) {
+                cache.availableTools = apiResult.data.data;
+            } else {
+                cache.availableTools = null;
+            }
+            
+            // Only mark as not needing refresh if call was successful
+            if (apiResult.httpStatus < 500) {
+                cache.needsRefresh = false;
+            }
+            
+            if (sendResponse) {
+                sendResponse({
+                    isConnected: cache.isConnected,
+                    availableTools: cache.availableTools,
+                    cached: false,
+                    httpStatus: apiResult.httpStatus
+                });
+            }
+            
+            return { isConnected: cache.isConnected, availableTools: cache.availableTools };
+        } catch (error) {
+            console.error('Error checking connection status:', error);
+            // On network error, keep current status but mark for refresh
+            cache.needsRefresh = true;
+            
+            if (sendResponse) {
+                sendResponse({
+                    isConnected: cache.isConnected || false,
+                    availableTools: cache.availableTools || null,
+                    cached: false,
+                    error: error.message
+                });
+            }
+            
+            return { isConnected: cache.isConnected || false, availableTools: cache.availableTools || null };
+        }
+    } catch (error) {
+        console.error('Error in checkConnectionStatus:', error);
+        if (sendResponse) {
+            sendResponse({ isConnected: false, availableTools: null, cached: false, error: error.message });
+        }
+        return { isConnected: false, availableTools: null };
+    }
+}
+
+// Invalidate status caches when settings are updated
+async function updateSettings(newSettings, sendResponse = null) {
+    try {
+        const updatedSettings = { ...openListData.settings, ...newSettings };
+        
+        // Check if token or endpoint changed
+        const tokenChanged = updatedSettings.token !== openListData.settings.token;
+        const endpointChanged = updatedSettings.apiEndpoint !== openListData.settings.apiEndpoint;
+        
+        await chrome.storage.local.set({ openListSettings: updatedSettings });
+        openListData.settings = updatedSettings;
+        
+        // Mark status caches for refresh if credentials changed
+        if (tokenChanged || endpointChanged) {
+            openListData.statusCache.auth.needsRefresh = true;
+            openListData.statusCache.connection.needsRefresh = true;
+        }
+        
+        const result = { success: true, settings: updatedSettings };
+        if (sendResponse) {
+            sendResponse(result);
+        }
+        return result;
+    } catch (error) {
+        console.error('Error updating settings:', error);
+        const result = { success: false, error: error.message };
+        if (sendResponse) {
+            sendResponse(result);
+        }
+        return result;
+    }
 }
 
 // Clean up old downloads and processed magnets every 10 minutes
@@ -427,7 +690,7 @@ async function cancelDownloadTask(taskId, token, sendResponse = null) {
         const settings = await getSettings();
         const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
         
-        const response = await fetch(`${apiEndpoint}/api/task/offline_download/cancel?tid=${encodeURIComponent(taskId)}`, {
+        const apiResult = await makeApiCall(`${apiEndpoint}/api/task/offline_download/cancel?tid=${encodeURIComponent(taskId)}`, {
             method: 'POST',
             headers: {
                 'Authorization': token,
@@ -435,13 +698,7 @@ async function cancelDownloadTask(taskId, token, sendResponse = null) {
             }
         });
         
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        const result = await response.json();
-        
-        if (result.code === 200) {
+        if (apiResult.success) {
             const responseData = {
                 success: true,
                 message: 'Task cancelled successfully'
@@ -449,12 +706,7 @@ async function cancelDownloadTask(taskId, token, sendResponse = null) {
             if (sendResponse) sendResponse(responseData);
             return responseData;
         } else {
-            // Handle 401 unauthorized - token is invalid
-            if (result.code === 401 ) {
-                // Token is invalid, user needs to update it in settings
-            }
-            
-            const error = result.message || 'Failed to cancel task';
+            const error = apiResult.error || 'Failed to cancel task';
             const responseData = { success: false, error };
             if (sendResponse) sendResponse(responseData);
             return responseData;
@@ -467,33 +719,33 @@ async function cancelDownloadTask(taskId, token, sendResponse = null) {
     }
 }
 
-// Check if polling should start - combines flag check and API query
-async function checkShouldStartPolling(sendResponse = null) {
+
+// Get downloads list from API
+async function getDownloadsList(sendResponse = null) {
     try {
-        // First check if flag is already set
+        // First check if flag is set (for when popup opens after download was triggered)
+        let shouldStartPolling = false;
         if (openListData.shouldStartPolling) {
             openListData.shouldStartPolling = false; // Reset flag after checking
-            if (sendResponse) {
-                sendResponse({ shouldStartPolling: true });
-            }
-            return;
+            shouldStartPolling = true;
         }
         
-        // If flag not set, check API for ongoing downloads
         const token = await getAuthToken();
         if (!token) {
-            if (sendResponse) {
-                sendResponse({ shouldStartPolling: false, error: 'No auth token' });
-            }
-            return;
+            const result = {
+                success: false,
+                error: 'No authentication token found. Please complete endpoint & token first',
+                downloads: [],
+                shouldStartPolling: shouldStartPolling
+            };
+            if (sendResponse) sendResponse(result);
+            return result;
         }
 
-        // Get current settings
         const settings = await getSettings();
         const apiEndpoint = settings.apiEndpoint || 'https://open.lan';
         
-        // Check for ongoing downloads
-        const response = await fetch(`${apiEndpoint}/api/task/offline_download/undone`, {
+        const apiResult = await makeApiCall(`${apiEndpoint}/api/task/offline_download/undone`, {
             method: 'GET',
             headers: {
                 'Authorization': token,
@@ -501,35 +753,47 @@ async function checkShouldStartPolling(sendResponse = null) {
             }
         });
         
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        const result = await response.json();
-        
-        if (result.code === 200) {
-            const downloads = result.data || [];
+        if (apiResult.success) {
+            const downloads = apiResult.data.data || [];
+            
+            // Sort downloads by creation time (newest first)
+            downloads.sort((a, b) => {
+                const timeA = a.start_time ? new Date(a.start_time).getTime() : 0;
+                const timeB = b.start_time ? new Date(b.start_time).getTime() : 0;
+                return timeB - timeA; // Descending order (newest first)
+            });
+            
+            // If flag was set or there are downloads, indicate polling should start
             const hasDownloads = downloads.length > 0;
             
-            if (sendResponse) {
-                sendResponse({
-                    shouldStartPolling: hasDownloads,
-                    downloadsCount: downloads.length
-                });
-            }
+            const responseData = {
+                success: true,
+                downloads: downloads,
+                count: downloads.length,
+                shouldStartPolling: shouldStartPolling || hasDownloads
+            };
+            if (sendResponse) sendResponse(responseData);
+            return responseData;
         } else {
-            // Handle 401 unauthorized - token is invalid
-            if (result.code === 401) {
-                // Token is invalid, user needs to update it in settings
-            }
-            
-            if (sendResponse) {
-                sendResponse({ shouldStartPolling: false, error: result.message });
-            }
+            const responseData = {
+                success: false,
+                error: apiResult.error || 'Failed to load downloads',
+                downloads: [],
+                code: apiResult.data?.code,
+                shouldStartPolling: shouldStartPolling
+            };
+            if (sendResponse) sendResponse(responseData);
+            return responseData;
         }
     } catch (error) {
-        if (sendResponse) {
-            sendResponse({ shouldStartPolling: false, error: error.message });
-        }
+        console.error('Error loading downloads:', error);
+        const responseData = {
+            success: false,
+            error: error.message,
+            downloads: [],
+            shouldStartPolling: shouldStartPolling
+        };
+        if (sendResponse) sendResponse(responseData);
+        return responseData;
     }
 }
