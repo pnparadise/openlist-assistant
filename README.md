@@ -2,6 +2,8 @@
 
 **GitHub Repository**: [https://github.com/pnparadise/openlist-assistant](https://github.com/pnparadise/openlist-assistant)
 
+**Chrome Web Store**: [https://chromewebstore.google.com/detail/openlist-download-assista/hpggdjnoodkkncnhelpeallkflccljjk?authuser=0&hl=zh-CN](https://chromewebstore.google.com/detail/openlist-download-assista/hpggdjnoodkkncnhelpeallkflccljjk?authuser=0&hl=zh-CN)
+
 A Chrome extension that intercepts magnet links from the address bar and adds them to OpenList offline downloads using the openlist ([GitHub - OpenListTeam/OpenList: A new AList Fork to Anti Trust Crisis](https://github.com/OpenListTeam/OpenList)) API.
 
 ## Features
