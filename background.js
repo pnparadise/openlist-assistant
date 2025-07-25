@@ -107,23 +107,10 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 
-chrome.webNavigation.onErrorOccurred.addListener((details) => {
-    if (details.url.startsWith('magnet:')) {
-        // This is likely the actual magnet URL from a redirect
-        // Handle it here since onBeforeNavigate caught the redirect URL
-        if (details.frameId === 0 && details.error === 'net::ERR_ABORTED') {
-            chrome.tabs.get(details.tabId, (tab) => {
-                if (!chrome.runtime.lastError) {
-                    handleMagnetLink(details.url, tab);
-                }
-            });
-        }
-    }
-});
 
 // Listen for navigation events to intercept magnet links
 chrome.webNavigation.onBeforeNavigate.addListener((details) => {
-    // Check if this might be a magnet link or redirect to magnet link
+    // Check if this is a direct magnet link
     const isMagnetDirect = details.url.startsWith('magnet:');
     
     // Check if this is a search engine URL containing magnet link
@@ -151,49 +138,98 @@ chrome.webNavigation.onBeforeNavigate.addListener((details) => {
         }
     }
     
-    const mightBeMagnetRedirect = !isSearchEngine && (
-        details.url.includes('magnet') ||
-        details.url.includes('btih') ||
-        details.url.includes('torrent') ||
-        details.url.match(/\/[a-fA-F0-9]{40}/) // Hash pattern
-    );
-    
     // Only handle main frame navigation (not iframes)
-    if (details.frameId === 0 && (isMagnetDirect || mightBeMagnetRedirect || extractedMagnetUrl)) {
-        // Prevent the navigation
-        chrome.tabs.update(details.tabId, { url: 'about:blank' }, (tab) => {
+    if (details.frameId === 0 && (isMagnetDirect || extractedMagnetUrl)) {
+        console.log('Intercepting magnet link navigation:', isMagnetDirect ? details.url : extractedMagnetUrl);
+        
+        // Immediately prevent the navigation by redirecting to a safe URL
+        const safeUrl = 'data:text/html,<html><head><title>Processing Magnet Link</title></head><body><h2>Processing magnet link...</h2><p>Please wait while we add this to your downloads.</p></body></html>';
+        
+        // Use chrome.tabs.update with a callback to ensure it completes
+        chrome.tabs.update(details.tabId, { url: safeUrl }, (tab) => {
             if (chrome.runtime.lastError) {
+                console.error('Error redirecting tab:', chrome.runtime.lastError.message);
                 // Fallback method
-                chrome.tabs.update(details.tabId, { url: 'javascript:void(0);' });
+                chrome.tabs.update(details.tabId, { url: 'about:blank' });
             }
+            
+            // Handle the magnet link after successful redirect
+            const magnetUrl = isMagnetDirect ? details.url : extractedMagnetUrl;
+            chrome.tabs.get(details.tabId, (currentTab) => {
+                if (!chrome.runtime.lastError && currentTab) {
+                    handleMagnetLink(magnetUrl, currentTab);
+                } else {
+                    // If we can't get tab info, still try to handle the magnet link
+                    handleMagnetLink(magnetUrl, { id: details.tabId });
+                }
+            });
         });
         
-        // Handle the magnet link
-        if (isMagnetDirect) {
-            chrome.tabs.get(details.tabId, (tab) => {
-                if (!chrome.runtime.lastError) {
-                    handleMagnetLink(details.url, tab);
-                }
-            });
-        } else if (extractedMagnetUrl) {
-            chrome.tabs.get(details.tabId, (tab) => {
-                if (!chrome.runtime.lastError) {
-                    handleMagnetLink(extractedMagnetUrl, tab);
-                }
-            });
-        }
-        // If it's mightBeMagnetRedirect, we wait for onErrorOccurred to catch the actual magnet URL
+        // Return true to indicate we're handling this navigation
+        return true;
     }
 });
 
 // Listen for tab updates to catch magnet links in address bar
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.url && changeInfo.url.startsWith('magnet:')) {
-        // Prevent the navigation by redirecting to about:blank
-        chrome.tabs.update(tabId, { url: 'about:blank' });
+        console.log('Tab update intercepted magnet link:', changeInfo.url);
+        
+        // Immediately prevent the navigation with a safe URL
+        const safeUrl = 'data:text/html,<html><head><title>Processing Magnet Link</title></head><body><h2>Processing magnet link...</h2><p>Please wait while we add this to your downloads.</p></body></html>';
+        
+        chrome.tabs.update(tabId, { url: safeUrl }, (updatedTab) => {
+            if (chrome.runtime.lastError) {
+                console.error('Error redirecting tab in onUpdated:', chrome.runtime.lastError.message);
+                // Fallback to about:blank
+                chrome.tabs.update(tabId, { url: 'about:blank' });
+            }
+        });
         
         // Handle the magnet link
         handleMagnetLink(changeInfo.url, tab);
+    }
+});
+
+// Additional listener for committed navigation events as a final fallback
+chrome.webNavigation.onCommitted.addListener((details) => {
+    if (details.frameId === 0 && details.url.startsWith('magnet:')) {
+        console.log('onCommitted intercepted magnet link:', details.url);
+        
+        // This is a last resort - the navigation has already started
+        const safeUrl = 'data:text/html,<html><head><title>Processing Magnet Link</title></head><body><h2>Processing magnet link...</h2><p>Please wait while we add this to your downloads.</p></body></html>';
+        
+        chrome.tabs.update(details.tabId, { url: safeUrl }, (tab) => {
+            if (chrome.runtime.lastError) {
+                console.error('Error redirecting tab in onCommitted:', chrome.runtime.lastError.message);
+                chrome.tabs.update(details.tabId, { url: 'about:blank' });
+            }
+            
+            // Handle the magnet link
+            chrome.tabs.get(details.tabId, (currentTab) => {
+                if (!chrome.runtime.lastError && currentTab) {
+                    handleMagnetLink(details.url, currentTab);
+                } else {
+                    handleMagnetLink(details.url, { id: details.tabId });
+                }
+            });
+        });
+    }
+});
+
+// Listen for error events that might occur when trying to navigate to magnet links
+chrome.webNavigation.onErrorOccurred.addListener((details) => {
+    if (details.frameId === 0 && details.url.startsWith('magnet:')) {
+        console.log('Navigation error for magnet link, handling:', details.url, 'Error:', details.error);
+        
+        // Handle the magnet link even if navigation failed
+        chrome.tabs.get(details.tabId, (tab) => {
+            if (!chrome.runtime.lastError && tab) {
+                handleMagnetLink(details.url, tab);
+            } else {
+                handleMagnetLink(details.url, { id: details.tabId });
+            }
+        });
     }
 });
 
@@ -253,11 +289,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Handle magnet link interception
 async function handleMagnetLink(magnetUrl, tab, sendResponse = null) {
     try {
+        console.log('Processing magnet link:', magnetUrl);
+        
+        // Validate magnet URL format
+        if (!magnetUrl || !magnetUrl.startsWith('magnet:')) {
+            const error = 'Invalid magnet URL format';
+            console.error(error, magnetUrl);
+            showNotification('Error', error);
+            if (sendResponse) {
+                sendResponse({ success: false, error });
+            }
+            return;
+        }
+        
         // Check if this magnet link has already been processed
         if (openListData.processedMagnets.has(magnetUrl)) {
-            showNotification('Info', 'This magnet link has already been added');
+            const message = 'This magnet link has already been added';
+            console.log(message);
+            showNotification('Info', message);
             if (sendResponse) {
-                sendResponse({ success: false, error: 'This magnet link has already been added' });
+                sendResponse({ success: false, error: message });
             }
             return;
         }
@@ -265,15 +316,21 @@ async function handleMagnetLink(magnetUrl, tab, sendResponse = null) {
         // Get auth token
         const token = await getAuthToken();
         if (!token) {
-            showNotification('Error', `Please complete endpoint & token first`);
+            const error = 'Please complete endpoint & token first';
+            console.error(error);
+            showNotification('Error', error);
             if (sendResponse) {
-                sendResponse({ success: false, error: `Please complete endpoint & token first` });
+                sendResponse({ success: false, error });
             }
             return;
         }
 
         // Get current settings
         const settings = await getSettings();
+        console.log('Using settings:', settings);
+        
+        // Show processing notification
+        showNotification('Processing', 'Adding magnet link to downloads...');
         
         // Add to offline downloads
         const result = await addOfflineDownload([magnetUrl], settings, null, token);
@@ -281,6 +338,7 @@ async function handleMagnetLink(magnetUrl, tab, sendResponse = null) {
         if (result.success) {
             // Mark this magnet link as processed
             openListData.processedMagnets.add(magnetUrl);
+            console.log('Successfully added magnet link to downloads');
             showNotification('Success', 'Magnet link added to OpenList downloads');
             updateIcon(true, tab.id);
             
@@ -300,16 +358,20 @@ async function handleMagnetLink(magnetUrl, tab, sendResponse = null) {
                 sendResponse({ success: true, message: 'Magnet link added successfully' });
             }
         } else {
-            showNotification('Error', result.error || 'Failed to add download');
+            const error = result.error || 'Failed to add download';
+            console.error('Failed to add magnet link:', error);
+            showNotification('Error', error);
             if (sendResponse) {
-                sendResponse({ success: false, error: result.error || 'Failed to add download' });
+                sendResponse({ success: false, error });
             }
         }
         
     } catch (error) {
-        showNotification('Error', 'Failed to process magnet link');
+        console.error('Error processing magnet link:', error);
+        const errorMessage = 'Failed to process magnet link: ' + error.message;
+        showNotification('Error', errorMessage);
         if (sendResponse) {
-            sendResponse({ success: false, error: 'Failed to process magnet link: ' + error.message });
+            sendResponse({ success: false, error: errorMessage });
         }
     }
 }
