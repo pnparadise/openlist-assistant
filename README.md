@@ -220,6 +220,17 @@ For issues related to:
 
 ## Version History
 
+### v1.1.1
+
+- **Enhanced magnet link interception**: Improved multiple fallback mechanisms to prevent "scheme does not have a registered handler" errors
+- **Better navigation handling**: Added `onCommitted` and `onErrorOccurred` listeners for comprehensive magnet link catching
+- **Improved error handling**: Enhanced logging and user feedback during magnet link processing
+- **Enhanced security**: Added content security policy for extension pages
+- **Better user experience**: Informative processing pages instead of blank redirects, no automatic tab closure
+- **Cache enhanced**: Persistent caching system for auth and connection status to reduce API calls and improve performance
+- **Smart cache management**: Automatic cache invalidation on errors and credential changes for better reliability
+- **Optimized API calls**: Common API call functions with intelligent error handling and status cache updates
+
 ### v1.1.0
 
 - **Settings-based authentication**: Removed localStorage dependency, token now configured in extension settings
